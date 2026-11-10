@@ -61,11 +61,18 @@ func HPL_Initialize (inDriver: AudioServerPlugInDriverRef, inHost: AudioServerPl
   // execution of this method.
   guard HPLDriver.validateDriver(inDriver) else { return kAudioHardwareBadObjectError }
 
-  // log("Invoked HPL_Initialize()")
+  HPLDevice.debug = DriverDebug()
+  HPLDevice.debug?.set(\.phase, 1)
+  HPLDevice.debug?.bump(\.initializeCalled)
 
   HPLDriver.host = inHost
 
   HPLDriver.calculateHostTicksPerFrame()
+  HPLDevice.debug?.set(\.phase, 2)
+
+  HPLDevice.shmWriter = DriverShmWriter()
+  HPLDevice.debug?.set(\.shmOk, HPLDevice.shmWriter != nil ? 1 : 99)
+  HPLDevice.debug?.set(\.phase, 3)
 
   return noErr
 }
@@ -132,7 +139,8 @@ func HPL_PerformDeviceConfigurationChange (
   // as it is the only state that can be changed for the device that isn't a control. For this
   // change, the new sample rate is passed in the inChangeAction argument.
   guard HPLDriver.validateDriver(inDriver) else { return kAudioHardwareBadObjectError }
-//  log("Invoked HPL_PerformDeviceConfigurationChange()")
+  HPLDevice.debug?.bump(\.performConfigCount)
+  HPLDevice.debug?.set(\.lastPerformAction, inChangeAction)
   if !kHPLDeviceSupportedSampleRates.contains(where: { UInt64($0) == inChangeAction }) { return kAudioHardwareBadObjectError }
 
   HPLDriver.mutex.lock()
@@ -329,9 +337,12 @@ func HPL_StartIO (inDriver: AudioServerPlugInDriverRef, inDeviceObjectID: AudioO
   // increment the counter.
   guard HPLDriver.validateDriver(inDriver) else { return kAudioHardwareBadObjectError }
 
+  HPLDevice.debug?.bump(\.startIOCount)
   HPLDriver.mutex.lock()
   let status = HPLDevice.startIO()
   HPLDriver.mutex.unlock()
+  HPLDevice.debug?.set(\.startIOReturned, 1)
+  HPLDevice.debug?.set(\.lastError, status)
 
   return status
 }
@@ -341,6 +352,7 @@ func HPL_StopIO (inDriver: AudioServerPlugInDriverRef, inDeviceObjectID: AudioOb
   // once all clients have stopped.
   guard HPLDriver.validateDriver(inDriver) else { return kAudioHardwareBadObjectError }
 
+  HPLDevice.debug?.bump(\.stopIOCount)
   HPLDriver.mutex.lock()
   let status = HPLDevice.stopIO()
   HPLDriver.mutex.unlock()
@@ -397,7 +409,8 @@ func HPL_WillDoIOOperation (
     willDoInPlace = true
     break
   case AudioServerPlugInIOOperation.readInput.rawValue:
-    willDo = true
+    // shm 推送版无输入流。
+    willDo = false
     willDoInPlace = true
     break
   default: break

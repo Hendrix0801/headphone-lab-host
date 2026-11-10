@@ -24,6 +24,7 @@ let shmPath = kCaptureShmPath
 unlink(shmPath)
 let fd = open(shmPath, O_RDWR | O_CREAT | O_TRUNC, 0o666)
 guard fd >= 0 else { fputs("open failed\n", stderr); exit(1) }
+fchmod(fd, 0o666)
 guard ftruncate(fd, off_t(headerSize + ringBytes)) == 0 else { fputs("ftruncate failed\n", stderr); exit(1) }
 guard let base = mmap(nil, headerSize + ringBytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0), base != MAP_FAILED else {
     fputs("mmap failed\n", stderr); exit(1)

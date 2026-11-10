@@ -53,6 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isOurVirtualDevice(currentDefault), realOutputDeviceID != 0 {
             AudioDevices.setDefaultOutputDevice(realOutputDeviceID)
         }
+        // 还原真实设备的音量
+        if savedRealVolume >= 0, realOutputDeviceID != 0 {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain)
+            var vol = savedRealVolume
+            AudioObjectSetPropertyData(realOutputDeviceID, &addr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+        }
         loopback.destroy()
         captureProcess?.terminate()
         captureProcess = nil
@@ -204,15 +213,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // 真实设备 → 自动接管：改名 + 设为系统输出。
+        // 真实设备 → 自动接管：改名 + 音量同步 + 设为系统输出。
         realOutputDeviceID = currentDefault
         let baseName = AudioDevices.info(currentDefault)?.name ?? "输出设备"
         let name = "\(baseName)\(DriverSink.nameSuffix)"
         if DriverSink.setName(name), let driverID = DriverSink.deviceID() {
+            syncVolumeToDriver(from: currentDefault)
             AudioDevices.setDefaultOutputDevice(driverID)
         }
         if reconfigure { reconfigureEngine() }
         updateRouteLabel()
+    }
+
+    private var savedRealVolume: Float = -1
+
+    /// 把真实设备的当前音量复制到驱动的音量控件，并将真实设备拉满，
+    /// 使系统音量键（驱动控件）成为唯一音量级，保证切换时音量感知连续。
+    private func syncVolumeToDriver(from realID: AudioDeviceID) {
+        guard let driverID = DriverSink.deviceID() else { return }
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain)
+        var vol: Float32 = 1.0
+        var size = UInt32(MemoryLayout<Float32>.size)
+        guard AudioObjectGetPropertyData(realID, &addr, 0, nil, &size, &vol) == noErr else { return }
+        savedRealVolume = vol
+        setDriverVolumeScalar(vol)
+        var full: Float32 = 1.0
+        AudioObjectSetPropertyData(realID, &addr, 0, nil, size, &full)
+    }
+
+    private func setDriverVolumeScalar(_ v: Float32) {
+        guard let driverID = DriverSink.deviceID() else { return }
+        var listAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyControlList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var listSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(driverID, &listAddr, 0, nil, &listSize) == noErr else { return }
+        let count = Int(listSize) / MemoryLayout<AudioObjectID>.size
+        guard count > 0 else { return }
+        var controls = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(driverID, &listAddr, 0, nil, &listSize, &controls) == noErr else { return }
+        for control in controls {
+            var classAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyClass,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var cls = AudioClassID(0)
+            var clsSize = UInt32(MemoryLayout<AudioClassID>.size)
+            guard AudioObjectGetPropertyData(control, &classAddr, 0, nil, &clsSize, &cls) == noErr else { continue }
+            guard cls == kAudioLevelControlClassID else { continue }
+            var volAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioLevelControlPropertyScalarValue,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var value = v
+            AudioObjectSetPropertyData(control, &volAddr, 0, nil, UInt32(MemoryLayout<Float32>.size), &value)
+            return
+        }
     }
 
     private func updateRouteLabel() {
@@ -260,6 +320,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var captureProcess: Process?
+    private var lastCaptureTick: UInt64 = 0
+    private var frozenTicks = 0
+    private var lastHelperBounce = Date.distantPast
+
+    /// 采集恢复：helper 模式重启助手；驱动模式仅重新映射 shm。
+    private func bounceCapture() {
+        if DriverSink.deviceID() != nil {
+            host.shmReader = ShmCaptureReader()
+            lastCaptureTick = 0
+            frozenTicks = 0
+            return
+        }
+        captureProcess?.terminate()
+        captureProcess = nil
+        host.shmReader = nil
+        guard ensureCaptureRunning() else { return }
+        var reader: ShmCaptureReader? = nil
+        for _ in 0..<20 {
+            reader = ShmCaptureReader()
+            if reader != nil { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        if let reader {
+            host.shmReader = reader
+            lastCaptureTick = 0
+        }
+    }
 
     /// 启动/复用采集助手进程（它持有 BlackHole 输入流并写入共享内存）。
     private func ensureCaptureRunning() -> Bool {
@@ -285,11 +372,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateStatus("等待选择输出设备")
             return
         }
-        guard ensureCaptureRunning() else {
-            updateStatus("无法启动采集助手")
-            return
+        let driverMode = DriverSink.deviceID() != nil
+        if driverMode {
+            // 驱动模式：音频由驱动直接写入 shm，无需采集助手。
+            if captureProcess != nil {
+                captureProcess?.terminate()
+                captureProcess = nil
+            }
+        } else {
+            guard ensureCaptureRunning() else {
+                updateStatus("无法启动采集助手")
+                return
+            }
         }
-        // 等助手写好头结构
         var reader: ShmCaptureReader? = nil
         for _ in 0..<20 {
             reader = ShmCaptureReader()
@@ -297,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Thread.sleep(forTimeInterval: 0.1)
         }
         guard let reader else {
-            updateStatus("采集共享内存未就绪")
+            updateStatus(driverMode ? "驱动共享内存未就绪" : "采集共享内存未就绪")
             return
         }
         host.shmReader = reader
@@ -472,6 +567,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         levelTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self else { return }
             tick += 1
+            // 采集看门狗：心跳冻结说明采集侧停摆，自动恢复。
+            if let reader = self.host.shmReader {
+                let t = reader.currentTick
+                if t == self.lastCaptureTick {
+                    self.frozenTicks += 1
+                } else {
+                    self.frozenTicks = 0
+                    self.lastCaptureTick = t
+                }
+                if self.frozenTicks >= 8, Date().timeIntervalSince(self.lastHelperBounce) > 10 {
+                    self.lastHelperBounce = Date()
+                    self.frozenTicks = 0
+                    NSLog("[host] capture stalled, recovering")
+                    self.bounceCapture()
+                }
+            }
             let level = self.host.consumeInputLevel()
             let peak = self.host.debugPeak
             self.host.debugPeak = 0

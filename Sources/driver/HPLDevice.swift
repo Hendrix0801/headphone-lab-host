@@ -21,6 +21,9 @@ class HPLDevice: HPLObject {
   static let ioMutex = Mutex()
 
   static let ringBufferSize: UInt32 = 16384
+  static var shmWriter: DriverShmWriter?
+  static var debug: DriverDebug?
+
   static var ringBuffer: UnsafeMutablePointer<Float32>?
 
   static func getDescription (for samplingRate: Float64) -> AudioStreamBasicDescription {
@@ -96,7 +99,7 @@ class HPLDevice: HPLObject {
     case kAudioObjectPropertyOwnedObjects:
       switch (address.mScope) {
       case kAudioObjectPropertyScopeGlobal: return 8 * Memory.sizeof(AudioObjectID.self)
-      case kAudioObjectPropertyScopeInput: return 4 * Memory.sizeof(AudioObjectID.self)
+      case kAudioObjectPropertyScopeInput: return 0
       case kAudioObjectPropertyScopeOutput: return 4 * Memory.sizeof(AudioObjectID.self)
       default:
         return nil
@@ -113,8 +116,8 @@ class HPLDevice: HPLObject {
     case kAudioDevicePropertyLatency: return Memory.sizeof(UInt32.self)
     case kAudioDevicePropertyStreams:
       switch(address.mScope) {
-      case kAudioObjectPropertyScopeGlobal: return 2 * Memory.sizeof(AudioObjectID.self)
-      case kAudioObjectPropertyScopeInput: return Memory.sizeof(AudioObjectID.self)
+      case kAudioObjectPropertyScopeGlobal: return Memory.sizeof(AudioObjectID.self)
+      case kAudioObjectPropertyScopeInput: return 0
       case kAudioObjectPropertyScopeOutput: return Memory.sizeof(AudioObjectID.self)
       default:
         return nil
@@ -169,17 +172,14 @@ class HPLDevice: HPLObject {
       switch address.mScope {
       case kAudioObjectPropertyScopeGlobal:
         return .objectIDList([
-          kObjectID_Stream_Input,
-
           kObjectID_Stream_Output,
           kObjectID_Volume_Output_Master,
           kObjectID_Mute_Output_Master,
           kObjectID_DataSource_Output_Master,
         ])
       case kAudioObjectPropertyScopeInput:
-        return .objectIDList([
-          kObjectID_Stream_Input,
-        ])
+        // shm 推送版：无输入流。
+        return .objectIDList([])
       case kAudioObjectPropertyScopeOutput:
         return .objectIDList([
           kObjectID_Stream_Output,
@@ -264,10 +264,10 @@ class HPLDevice: HPLObject {
       switch address.mScope {
       case kAudioObjectPropertyScopeGlobal:
         // global scope means return all streams
-        return .objectIDList([ kObjectID_Stream_Input, kObjectID_Stream_Output ])
+        return .objectIDList([ kObjectID_Stream_Output ])
       case kAudioObjectPropertyScopeInput:
-        // input scope means just the objects on the input side
-        return .audioObjectID(kObjectID_Stream_Input)
+        // shm 推送版：无输入流。
+        return .objectIDList([])
       case kAudioObjectPropertyScopeOutput:
         // output scope means just the objects on the output side
         return .audioObjectID(kObjectID_Stream_Output)
@@ -499,77 +499,35 @@ class HPLDevice: HPLObject {
   }
 
   static func doIO (client: HPLClient?, operationID: UInt32, sample: UnsafeMutablePointer<Float32>, cycleInfo: AudioServerPlugInIOCycleInfo, frameSize: UInt32) -> OSStatus {
-
-    log("doIO op=\(operationID) frames=\(frameSize)")
-    guard let buffer = ringBuffer else {
-      log("doIO: ringBuffer is NIL")
+    guard operationID == AudioServerPlugInIOOperation.writeMix.rawValue else {
       return noErr
     }
+    debug?.bump(\.writeMixCount)
 
-    ioMutex.lock()
+    let chCount = Int(kChannelCount)
+    let n = Int(frameSize)
+    let volume = HPLControl.muted ? Float32(0) : HPLControl.volume
 
-    switch operationID {
-    // Store
-    case AudioServerPlugInIOOperation.writeMix.rawValue:
-      let sampleTime = Int(cycleInfo.mOutputTime.mSampleTime)
-      for frame in 0 ..< frameSize {
-        for channel in 0 ..< kChannelCount {
-          let readFrame = Int(frame * kChannelCount + channel)
-
-          if HPLControl.muted {
-            // Muted
-            sample[readFrame] = 0
-          }
-
-          let writePosition = sampleTime + Int(frame)
-          let writeRemainder = writePosition % Int(ringBufferSize)
-          let writeFrame = writeRemainder * Int(kChannelCount) + Int(channel)
-          buffer[writeFrame] += sample[readFrame]
-
-          // Clean up buffer
-          let cleanCleanPosition = sampleTime + Int(frame) + 8192
-          let cleanRemainder = cleanCleanPosition % Int(ringBufferSize)
-          let cleanFrame = cleanRemainder * Int(kChannelCount) + Int(channel)
-          buffer[cleanFrame] = 0
+    if let shm = shmWriter {
+      // ioMainBuffer 为交错 Float32（与流格式一致）。
+      let base = Int(cycleInfo.mOutputTime.mSampleTime)
+      for f in 0..<n {
+        for c in 0..<chCount {
+          shm.write(baseIdx: base, frame: f, channel: c, value: sample[f * chCount + c] * volume)
         }
       }
-
-      // Make output buffer silent
-      sample.update(repeating: 0, count: Int(frameSize * kChannelCount))
-
-      break
-    // Read
-    case AudioServerPlugInIOOperation.readInput.rawValue:
-      let sampleTime = Int(cycleInfo.mInputTime.mSampleTime)
-      for frame in 0 ..< frameSize {
-        for channel in 0 ..< kChannelCount {
-          let writeFrame = Int(frame * kChannelCount + channel)
-
-          if HPLControl.muted {
-            sample[writeFrame] = 0
-          } else {
-            let readPosition = sampleTime + Int(frame)
-            let readRemainder = readPosition % Int(ringBufferSize)
-            let readFrame = readRemainder * Int(kChannelCount) + Int(channel)
-            sample[writeFrame] = buffer[readFrame]
-          }
-
-          // Clean up buffer
-          let cleanPosition = sampleTime + Int(frame) - Int(ringBufferSize)
-          if (cleanPosition > -1) {
-            let cleanRemainder = cleanPosition % Int(ringBufferSize)
-            let cleanFrame = cleanRemainder * Int(kChannelCount) + Int(channel)
-            buffer[cleanFrame] = 0
-          }
-
-        }
-      }
-      break
-    default: break
+      shmTick &+= 1
+      shm.publish(
+        writePos: UInt64(Int64(cycleInfo.mOutputTime.mSampleTime) + Int64(n)),
+        tick: shmTick,
+        sampleRate: sampleRate, channels: UInt32(chCount))
+      debug?.addFrames(UInt64(n))
     }
 
-    ioMutex.unlock()
-
+    // 设备对外静音（音频只进共享内存）。
+    sample.update(repeating: 0, count: n * chCount)
     return noErr
   }
+
+  static var shmTick: UInt64 = 0
 }

@@ -44,6 +44,7 @@ final class ShmCaptureReader {
     }
 
     var isRunning: Bool { header.pointee.running == 1 }
+    var currentTick: UInt64 { header.pointee.tick }
     var availableFrames: Int {
         let w = Int(header.pointee.writePos)
         let r = Int(header.pointee.readPos)

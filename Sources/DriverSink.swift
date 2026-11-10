@@ -24,9 +24,8 @@ enum DriverSink {
             mElement: kAudioObjectPropertyElementMain)
     }
 
-    /// 实验性自研驱动开关：当前版本 IO 未跑通，默认关闭，
-    /// 声音链路走 BlackHole/Oray + 聚合设备方案。
-    static let enabled = UserDefaults.standard.bool(forKey: "enableExperimentalDriver")
+    /// 自研驱动开关：默认启用（shm 推送版）；设 disableExperimentalDriver=1 可强制回退 helper 方案。
+    static let enabled = ProcessInfo.processInfo.environment["disableExperimentalDriver"] != "1"
 
     static func deviceID() -> AudioDeviceID? {
         guard enabled else { return nil }
