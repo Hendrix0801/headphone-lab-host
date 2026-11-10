@@ -278,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateRouteLabel() {
         if DriverSink.isDriverDevice(AudioDevices.defaultOutputDeviceID()) {
             let name = DriverSink.currentName() ?? DriverSink.defaultDeviceName
-            routeLabel.stringValue = "系统声音接入：\n已接管系统输出「\(name)」\n\n在系统菜单里选其他扬声器/耳机即可切换；退出本 app 时自动切回。"
+            routeLabel.stringValue = "系统声音接入：\n已接管系统输出\n「\(name)」\n\n在系统菜单里选其他扬声器/耳机\n即可切换；退出 app 自动切回。"
         } else {
             routeLabel.stringValue = "系统声音接入：\n未接管。"
         }
@@ -458,10 +458,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
     }
 
+    private func wrapLabel(_ label: NSTextField) {
+        label.maximumNumberOfLines = 0
+        label.preferredMaxLayoutWidth = sidebarWidth - 32
+        label.lineBreakMode = .byWordWrapping
+        label.usesSingleLineMode = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
     private func makeSidebarItems() -> [NSView] {
-        statusLabel.maximumNumberOfLines = 0
-        statusLabel.preferredMaxLayoutWidth = sidebarWidth - 32
-        levelLabel.maximumNumberOfLines = 0
+        wrapLabel(statusLabel)
+        wrapLabel(levelLabel)
 
         let bufferLabel = NSTextField(labelWithString: "缓冲区大小")
         bufferLabel.font = NSFont.systemFont(ofSize: 11)
@@ -471,8 +478,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bufferPopup.target = self
         bufferPopup.action = #selector(bufferSizeChanged(_:))
 
-        routeLabel.maximumNumberOfLines = 0
-        routeLabel.preferredMaxLayoutWidth = sidebarWidth - 32
+        wrapLabel(routeLabel)
 
         let volumeLabel = NSTextField(labelWithString: "输出音量")
         volumeLabel.font = NSFont.systemFont(ofSize: 11)
