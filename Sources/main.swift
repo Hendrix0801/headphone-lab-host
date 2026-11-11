@@ -617,6 +617,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("[host] capture stalled, recovering")
                     self.bounceCapture()
                 }
+                // 静音自动挂起：长时间无输入音频时暂停引擎，
+                // 释放 coreaudiod 的防睡眠断言，让系统可以正常休眠。
+                if self.frozenTicks >= 16, self.host.isRunning {
+                    NSLog("[host] no input for 8s, suspending engine")
+                    self.host.stop()
+                    self.updateStatus("已挂起（无音频输入）")
+                }
+                if self.frozenTicks == 0, !self.host.isRunning, self.lastConfiguredOutput != 0 {
+                    NSLog("[host] input resumed, restarting engine")
+                    self.reconfigureEngine()
+                }
             }
             let level = self.host.consumeInputLevel()
             let peak = self.host.debugPeak
