@@ -339,6 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var captureProcess: Process?
+    private var lastEngineRetry = Date.distantPast
     private var lastCaptureTick: UInt64 = 0
     private var frozenTicks = 0
     private var lastHelperBounce = Date.distantPast
@@ -625,9 +626,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.lastCaptureTick = t
                 }
                 if !self.host.isRunning {
-                    appLog("engine not running, reconfiguring")
-                    self.lastConfiguredOutput = 0
-                    self.reconfigureEngine()
+                    // 设备插拔瞬间音频会话会混乱（-10851 等），
+                    // 带间隔重试，避免风暴，也给会话恢复的时间。
+                    if Date().timeIntervalSince(self.lastEngineRetry) > 2.0 {
+                        self.lastEngineRetry = Date()
+                        appLog("engine not running, reconfiguring")
+                        self.lastConfiguredOutput = 0
+                        self.reconfigureEngine()
+                    }
                 }
                 if self.frozenTicks >= 8, Date().timeIntervalSince(self.lastHelperBounce) > 10 {
                     self.lastHelperBounce = Date()
