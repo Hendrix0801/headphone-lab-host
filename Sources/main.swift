@@ -32,6 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemDidWake),
+            name: NSWorkspace.screensDidWakeNotification, object: nil)
+
         startLevelTimer()
         beginLoad()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
@@ -367,9 +374,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var lastConfiguredOutput: AudioDeviceID = 0
+
     private func reconfigureEngine() {
         guard realOutputDeviceID != 0 else {
             updateStatus("等待选择输出设备")
+            return
+        }
+        // 重配去抖：目标未变且引擎在跑时跳过（设备切换事件常连续触发多次）。
+        if realOutputDeviceID == lastConfiguredOutput, host.isRunning {
+            updateStatus()
             return
         }
         let driverMode = DriverSink.deviceID() != nil
@@ -403,6 +417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try host.buildGraph()
             try host.start()
             host.reassertOutputDevice(realOutputDeviceID)
+            lastConfiguredOutput = realOutputDeviceID
             NSLog("[host] engine running")
             updateStatus()
         } catch {
@@ -551,6 +566,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.outputVolume = sender.floatValue
     }
 
+    /// 合盖睡眠后音频链路各环（引擎/驱动/设备枚举）都可能失效，醒来强制重建。
+    @objc private func systemDidWake() {
+        NSLog("[host] system woke, reconfiguring")
+        lastConfiguredOutput = 0
+        host.shmReader = nil
+        updateRouting(reconfigure: false)
+        reconfigureEngine()
+    }
+
     @objc private func takeoverRequested() {
         // 强制重新评估：把系统输出切到真实设备再接管。
         if realOutputDeviceID != 0 {
@@ -581,6 +605,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     self.frozenTicks = 0
                     self.lastCaptureTick = t
+                }
+                if !self.host.isRunning {
+                    NSLog("[host] engine not running, reconfiguring")
+                    self.lastConfiguredOutput = 0
+                    self.reconfigureEngine()
                 }
                 if self.frozenTicks >= 8, Date().timeIntervalSince(self.lastHelperBounce) > 10 {
                     self.lastHelperBounce = Date()
