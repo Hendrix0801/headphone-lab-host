@@ -8,6 +8,10 @@
 	<string>HEADPHONE LAB</string>
 	<key>CFBundleExecutable</key>
 	<string>HeadphoneLabHost</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.headphonelab.host</string>
 	<key>CFBundleInfoDictionaryVersion</key>

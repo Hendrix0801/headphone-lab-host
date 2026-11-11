@@ -31,7 +31,11 @@ $(HELPER): $(HELPER_SOURCES)
 	@mkdir -p $(@D)
 	xcrun swiftc -O -swift-version 5 -o $@ $(HELPER_SOURCES) -framework CoreAudio -framework AudioToolbox -framework Foundation
 
-$(APP): $(EXEC) $(PLIST) $(HELPER)
+$(APP)/Contents/Resources/AppIcon.icns: Resources/AppIcon.icns
+	@mkdir -p $(@D)
+	cp $< $@
+
+$(APP): $(EXEC) $(PLIST) $(HELPER) $(APP)/Contents/Resources/AppIcon.icns
 	codesign --force --sign - --timestamp=none $(APP)
 
 # --- AudioServerPlugIn driver (ported from eqMac's driver target, which is a
