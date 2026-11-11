@@ -72,10 +72,16 @@ final class DriverShmWriter {
         ring[((baseIdx + frame) % ringFrames) * channels + channel] = value
     }
 
+    private var lastPublishedWritePos: UInt64 = 0
+
+    /// 发布单调递增的 writePos；对 sampleTime 跳变/回绕做钳制。
     func publish(writePos: UInt64, tick: UInt64, sampleRate: Double, channels: UInt32) {
+        var w = writePos
+        if w < lastPublishedWritePos { w = lastPublishedWritePos }
+        lastPublishedWritePos = w
         header.pointee.sampleRate = sampleRate
         header.pointee.channels = channels
-        header.pointee.writePos = writePos
+        header.pointee.writePos = w
         header.pointee.tick = tick
     }
 }
@@ -95,6 +101,8 @@ struct DriverDebugBlock {
     var lastError: Int32
     var shmOk: UInt32
     var framesWritten: UInt64
+    var negativeBaseCount: UInt32
+    var sampleTimeJumps: UInt32
 }
 
 final class DriverDebug {
@@ -110,7 +118,8 @@ final class DriverDebug {
             block.pointee = DriverDebugBlock(
                 magic: 0x48504C44, initializeCalled: 0, startIOCount: 0, stopIOCount: 0,
                 writeMixCount: 0, performConfigCount: 0, lastPerformAction: 0,
-                sampleRate: 0, phase: 0, startIOReturned: 0, lastError: 0, shmOk: 0, framesWritten: 0)
+                sampleRate: 0, phase: 0, startIOReturned: 0, lastError: 0, shmOk: 0, framesWritten: 0,
+                negativeBaseCount: 0, sampleTimeJumps: 0)
         }
     }
 

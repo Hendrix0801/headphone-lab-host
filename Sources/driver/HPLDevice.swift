@@ -510,7 +510,19 @@ class HPLDevice: HPLObject {
 
     if let shm = shmWriter {
       // ioMainBuffer 为交错 Float32（与流格式一致）。
-      let base = Int(cycleInfo.mOutputTime.mSampleTime)
+      let sampleTime = Int64(cycleInfo.mOutputTime.mSampleTime)
+      if sampleTime < 0 {
+        // 时钟域重新锚定时 sampleTime 可能为负：负索引会越界写坏共享内存头部。
+        debug?.bump(\.negativeBaseCount)
+        sample.update(repeating: 0, count: n * chCount)
+        return noErr
+      }
+      let delta = sampleTime - lastSampleTime
+      if lastSampleTime != 0 && (delta < 0 || delta > Int64(frameSize) * 4) {
+        debug?.bump(\.sampleTimeJumps)
+      }
+      lastSampleTime = sampleTime
+      let base = Int(sampleTime)
       for f in 0..<n {
         for c in 0..<chCount {
           shm.write(baseIdx: base, frame: f, channel: c, value: sample[f * chCount + c] * volume)
@@ -530,4 +542,5 @@ class HPLDevice: HPLObject {
   }
 
   static var shmTick: UInt64 = 0
+  static var lastSampleTime: Int64 = 0
 }

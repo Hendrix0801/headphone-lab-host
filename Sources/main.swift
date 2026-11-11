@@ -1,6 +1,18 @@
 import Cocoa
 import CoreAudio
 
+import Foundation
+
+let appLogPath = "/tmp/hplab_app.log"
+func appLog(_ msg: String) {
+    let line = String(format: "%@ %@\n", ISO8601DateFormatter().string(from: Date()), msg)
+    if let h = FileHandle(forWritingAtPath: appLogPath) {
+        h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
+    } else {
+        FileManager.default.createFile(atPath: appLogPath, contents: line.data(using: .utf8))
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static weak var main: AppDelegate?
@@ -421,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("[host] engine running")
             updateStatus()
         } catch {
-            NSLog("[host] engine setup failed: %@", error.localizedDescription)
+            appLog("engine setup failed: \(error.localizedDescription)")
             updateStatus(error.localizedDescription)
         }
     }
@@ -568,7 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 合盖睡眠后音频链路各环（引擎/驱动/设备枚举）都可能失效，醒来强制重建。
     @objc private func systemDidWake() {
-        NSLog("[host] system woke, reconfiguring")
+        appLog("system woke, reconfiguring")
         lastConfiguredOutput = 0
         host.shmReader = nil
         updateRouting(reconfigure: false)
@@ -597,6 +609,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         levelTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self else { return }
             tick += 1
+            // 周期统计：定位偶发无声的取证数据。
+            if tick % 60 == 0, let reader = self.host.shmReader {
+                appLog(String(format: "stats w=%llu r=%llu avail=%d rate=%.0f tick=%llu engine=%d",
+                    reader.debugWritePos, reader.debugReadPos, reader.availableFrames,
+                    reader.sampleRate, reader.currentTick, self.host.isRunning ? 1 : 0))
+            }
             // 采集看门狗：心跳冻结说明采集侧停摆，自动恢复。
             if let reader = self.host.shmReader {
                 let t = reader.currentTick
@@ -607,25 +625,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.lastCaptureTick = t
                 }
                 if !self.host.isRunning {
-                    NSLog("[host] engine not running, reconfiguring")
+                    appLog("engine not running, reconfiguring")
                     self.lastConfiguredOutput = 0
                     self.reconfigureEngine()
                 }
                 if self.frozenTicks >= 8, Date().timeIntervalSince(self.lastHelperBounce) > 10 {
                     self.lastHelperBounce = Date()
                     self.frozenTicks = 0
-                    NSLog("[host] capture stalled, recovering")
+                    appLog("capture stalled, recovering")
                     self.bounceCapture()
                 }
                 // 静音自动挂起：长时间无输入音频时暂停引擎，
                 // 释放 coreaudiod 的防睡眠断言，让系统可以正常休眠。
                 if self.frozenTicks >= 16, self.host.isRunning {
-                    NSLog("[host] no input for 8s, suspending engine")
+                    appLog("no input for 8s, suspending engine")
                     self.host.stop()
                     self.updateStatus("已挂起（无音频输入）")
                 }
                 if self.frozenTicks == 0, !self.host.isRunning, self.lastConfiguredOutput != 0 {
-                    NSLog("[host] input resumed, restarting engine")
+                    appLog("input resumed, restarting engine")
                     self.reconfigureEngine()
                 }
             }

@@ -45,6 +45,13 @@ final class ShmCaptureReader {
 
     var isRunning: Bool { header.pointee.running == 1 }
     var currentTick: UInt64 { header.pointee.tick }
+    var debugWritePos: UInt64 { header.pointee.writePos }
+    var debugReadPos: UInt64 { header.pointee.readPos }
+
+    /// 写入位置是否在合理窗口内（防驱动时钟跳变/头部损坏产生的垃圾值）。
+    func isSane(writePos w: UInt64) -> Bool {
+        return w <= header.pointee.readPos + UInt64(ringFrames) * 8
+    }
     var availableFrames: Int {
         let w = Int(header.pointee.writePos)
         var r = Int(header.pointee.readPos)
