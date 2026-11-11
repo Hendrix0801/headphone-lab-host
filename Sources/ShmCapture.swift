@@ -47,7 +47,13 @@ final class ShmCaptureReader {
     var currentTick: UInt64 { header.pointee.tick }
     var availableFrames: Int {
         let w = Int(header.pointee.writePos)
-        let r = Int(header.pointee.readPos)
+        var r = Int(header.pointee.readPos)
+        if w < r {
+            // 写入方重置了计数（驱动重启等）：跟随新基准并持久化。
+            // 必须在这里做——source node 在可用量为 0 时根本不会调用 read()。
+            r = w
+            header.pointee.readPos = UInt64(r)
+        }
         return max(0, min(w - r, ringFrames - 1))
     }
 
@@ -56,7 +62,12 @@ final class ShmCaptureReader {
     func read(frames frameCount: Int, to destination: UnsafeMutablePointer<Float32>) -> Int {
         let w = Int(header.pointee.writePos)
         var r = Int(header.pointee.readPos)
-        if w - r > ringFrames {
+        if w < r {
+            // 写入方重置了计数（驱动重启等），跟随到新基准并持久化，
+            // 否则可用量永远为 0，永远不会进入写回分支。
+            r = w
+            header.pointee.readPos = UInt64(r)
+        } else if w - r > ringFrames {
             // 溢出：落后太多，跳转到最新位置附近（以写入方为准）
             r = w - ringFrames / 2
         }

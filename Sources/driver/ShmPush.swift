@@ -52,7 +52,13 @@ final class DriverShmWriter {
         ring = base.advanced(by: headerSize).assumingMemoryBound(to: Float32.self)
         self.ringFrames = ringFrames
         channels = 2
-        if created || header.pointee.magic != driverCaptureMagic || header.pointee.ringFrames != UInt32(ringFrames) {
+        // 驱动是唯一的写入方且以 HAL sample time 为计数基准，
+        // 每次初始化都重置计数器，避免与读取方的历史计数错位。
+        let needsReset = created
+            || header.pointee.magic != driverCaptureMagic
+            || header.pointee.ringFrames != UInt32(ringFrames)
+            || header.pointee.readPos > header.pointee.writePos
+        if needsReset {
             header.pointee = DriverCaptureHeader(
                 magic: driverCaptureMagic, sampleRate: 48000, channels: 2,
                 ringFrames: UInt32(ringFrames), writePos: 0, readPos: 0, running: 1, tick: 0)

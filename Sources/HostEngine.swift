@@ -182,7 +182,9 @@ final class HostEngine {
                 return noErr
             }
             let abl = UnsafeMutableAudioBufferListPointer(outputData)
-            let n = min(Int(frameCount), reader.availableFrames)
+            // 注意：scratch 缓冲固定 4096 帧，必须同时按它截断，
+            // 否则设备大 buffer（如睡眠重建后）会溢出并摧毁引擎。
+            let n = min(min(Int(frameCount), reader.availableFrames), 4096)
             if n <= 0 {
                 isSilence.pointee = true
                 return noErr
