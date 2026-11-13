@@ -72,14 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isOurVirtualDevice(currentDefault), realOutputDeviceID != 0 {
             AudioDevices.setDefaultOutputDevice(realOutputDeviceID)
         }
-        // 还原真实设备的音量
-        if savedRealVolume >= 0, realOutputDeviceID != 0 {
-            var addr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyVolumeScalar,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: kAudioObjectPropertyElementMain)
-            var vol = savedRealVolume
-            AudioObjectSetPropertyData(realOutputDeviceID, &addr, 0, nil, UInt32(MemoryLayout<Float32>.size), &vol)
+        // 还原真实设备各元素的音量
+        if !savedRealVolumes.isEmpty, realOutputDeviceID != 0 {
+            for (el, vol) in savedRealVolumes {
+                var addr = volumeAddr(el)
+                var v = Float(vol)
+                AudioObjectSetPropertyData(realOutputDeviceID, &addr, 0, nil, UInt32(MemoryLayout<Float32>.size), &v)
+            }
         }
         loopback.destroy()
         captureProcess?.terminate()
@@ -223,6 +222,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if realOutputDeviceID == 0 {
                 realOutputDeviceID = DriverSink.resolveRealOutput()
             }
+            // 启动时若已接管（接管发生在上次运行期间），补做一次音量同步：
+            // 蓝牙设备（AirPods）的音量注册在声道元素上，需要被拉满，
+            // 否则系统音量键（驱动控件）之外还隔着一层很低的硬件音量。
+            if realOutputDeviceID != 0, savedRealVolumes.isEmpty {
+                syncVolumeToDriver(from: realOutputDeviceID)
+            }
             updateRouteLabel()
             return
         }
@@ -244,23 +249,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateRouteLabel()
     }
 
-    private var savedRealVolume: Float = -1
+    /// 各声道元素的音量备份（element -> volume）。蓝牙设备（如 AirPods）
+    /// 把音量注册在声道元素 0 上，不支持主元素（element Main）。
+    private var savedRealVolumes: [AudioObjectPropertyElement: Float] = [:]
+
+    /// 在真实设备上逐元素执行音量属性操作，返回成功的元素集合。
+    @discardableResult
+    private func forEachVolumeElement(_ realID: AudioDeviceID, _ body: (AudioObjectPropertyElement) -> Void) -> [AudioObjectPropertyElement] {
+        var done: [AudioObjectPropertyElement] = []
+        // 先试主元素，再试各声道元素（0..7 覆盖常见声道数）。
+        let elements: [AudioObjectPropertyElement] = [kAudioObjectPropertyElementMain, 0, 1, 2, 3, 4, 5, 6, 7]
+        for el in elements {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: el)
+            var probe: Float32 = 0
+            var size = UInt32(MemoryLayout<Float32>.size)
+            guard AudioObjectGetPropertyData(realID, &addr, 0, nil, &size, &probe) == noErr else { continue }
+            if done.contains(el) { continue }
+            body(el)
+            done.append(el)
+        }
+        return done
+    }
+
+    private func volumeAddr(_ el: AudioObjectPropertyElement) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: el)
+    }
 
     /// 把真实设备的当前音量复制到驱动的音量控件，并将真实设备拉满，
     /// 使系统音量键（驱动控件）成为唯一音量级，保证切换时音量感知连续。
     private func syncVolumeToDriver(from realID: AudioDeviceID) {
-        guard let driverID = DriverSink.deviceID() else { return }
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain)
-        var vol: Float32 = 1.0
-        var size = UInt32(MemoryLayout<Float32>.size)
-        guard AudioObjectGetPropertyData(realID, &addr, 0, nil, &size, &vol) == noErr else { return }
-        savedRealVolume = vol
-        setDriverVolumeScalar(vol)
-        var full: Float32 = 1.0
-        AudioObjectSetPropertyData(realID, &addr, 0, nil, size, &full)
+        guard DriverSink.deviceID() != nil else { return }
+        var firstVolume: Float = -1
+        var saved: [AudioObjectPropertyElement: Float] = [:]
+        let elements = forEachVolumeElement(realID) { el in
+            var addr = self.volumeAddr(el)
+            var v: Float32 = 0
+            var size = UInt32(MemoryLayout<Float32>.size)
+            guard AudioObjectGetPropertyData(realID, &addr, 0, nil, &size, &v) == noErr else { return }
+            saved[el] = v
+            if firstVolume < 0 { firstVolume = v }
+            var full: Float32 = 1.0
+            AudioObjectSetPropertyData(realID, &addr, 0, nil, size, &full)
+        }
+        guard !elements.isEmpty, firstVolume >= 0 else { return }
+        savedRealVolumes = saved
+        setDriverVolumeScalar(firstVolume)
+        appLog("volume synced from \(realID): \(firstVolume), elements \(elements.count)")
     }
 
     private func setDriverVolumeScalar(_ v: Float32) {
