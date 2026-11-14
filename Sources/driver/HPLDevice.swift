@@ -538,19 +538,10 @@ class HPLDevice: HPLObject {
 
     if let shm = shmWriter {
       // ioMainBuffer 为交错 Float32（与流格式一致）。
-      let sampleTime = Int64(cycleInfo.mOutputTime.mSampleTime)
-      if sampleTime < 0 {
-        // 时钟域重新锚定时 sampleTime 可能为负：负索引会越界写坏共享内存头部。
-        debug?.bump(\.negativeBaseCount)
-        sample.update(repeating: 0, count: n * chCount)
-        return noErr
-      }
-      let delta = sampleTime - lastSampleTime
-      if lastSampleTime != 0 && (delta < 0 || delta > Int64(frameSize) * 4) {
-        debug?.bump(\.sampleTimeJumps)
-      }
-      lastSampleTime = sampleTime
-      let base = Int(sampleTime)
+      // 关键：环形位置用自己的单调帧计数器，不用 HAL sampleTime——
+      // 设备重锚/切歌导致的 sampleTime 跳变会造成读写错位甚至长时间冻结。
+      shmTotalWritten &+= UInt64(n)
+      let base = Int(shmTotalWritten - UInt64(n))
       for f in 0..<n {
         for c in 0..<chCount {
           shm.write(baseIdx: base, frame: f, channel: c, value: sample[f * chCount + c] * volume)
@@ -558,7 +549,7 @@ class HPLDevice: HPLObject {
       }
       shmTick &+= 1
       shm.publish(
-        writePos: UInt64(Int64(cycleInfo.mOutputTime.mSampleTime) + Int64(n)),
+        writePos: shmTotalWritten,
         tick: shmTick,
         sampleRate: sampleRate, channels: UInt32(chCount))
       debug?.addFrames(UInt64(n))
@@ -570,5 +561,5 @@ class HPLDevice: HPLObject {
   }
 
   static var shmTick: UInt64 = 0
-  static var lastSampleTime: Int64 = 0
+  static var shmTotalWritten: UInt64 = 0
 }
