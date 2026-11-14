@@ -23,6 +23,9 @@ class HPLDevice: HPLObject {
   static let ringBufferSize: UInt32 = 16384
   static var shmWriter: DriverShmWriter?
   static var debug: DriverDebug?
+  /// 宿主 app 不在时隐藏设备。
+  static var isHidden = true
+  static var presenceTimer: DispatchSourceTimer?
 
   static var ringBuffer: UnsafeMutablePointer<Float32>?
 
@@ -308,9 +311,8 @@ class HPLDevice: HPLObject {
       )
 
     case kAudioDevicePropertyIsHidden:
-      // This returns whether or not the device is visible to clients.
-      // This device is always visible.
-      return .integer(0)
+      // 由存活看门狗维护：宿主 app 不在时隐藏设备（eqmac 同款设计）。
+      return .integer(isHidden ? 1 : 0)
 
     case kAudioDevicePropertyPreferredChannelsForStereo:
       // This property returns which two channesl to use as left/right for stereo
@@ -415,6 +417,28 @@ class HPLDevice: HPLObject {
       return noErr
     default: return kAudioHardwareUnknownPropertyError
     }
+  }
+
+  /// 每 5 秒检测宿主 app 是否存在，不存在则隐藏设备（反之显示）。
+  static func startPresenceWatchdog () {
+    guard presenceTimer == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+    timer.schedule(deadline: .now() + 3, repeating: 5.0)
+    timer.setEventHandler {
+      let visible = appProcessExists("HeadphoneLabHost")
+      let newHidden = !visible
+      if newHidden != isHidden {
+        isHidden = newHidden
+        HPLDriver.propertiesUpdated(
+          objectId: kObjectID_Device,
+          changedProperties: [AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyIsHidden,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)])
+      }
+    }
+    timer.resume()
+    presenceTimer = timer
   }
 
   static func startIO () -> OSStatus {

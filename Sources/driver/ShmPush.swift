@@ -86,6 +86,22 @@ final class DriverShmWriter {
     }
 }
 
+/// 检测指定名字的进程是否存在（按可执行文件路径后缀匹配）。
+func appProcessExists(_ name: String) -> Bool {
+    var pids = [pid_t](repeating: 0, count: 4096)
+    let bytes = Int32(MemoryLayout<pid_t>.size * pids.count)
+    let count = proc_listpids(UInt32(PROC_ALL_PIDS), UInt32(0), &pids, bytes)
+    guard count > 0 else { return false }
+    let n = Int(count) / MemoryLayout<pid_t>.size
+    for i in 0..<n where pids[i] > 0 {
+        var path = [CChar](repeating: 0, count: 4096)
+        if proc_pidpath(pids[i], &path, 4096) > 0 {
+            if String(cString: path).hasSuffix("/" + name) { return true }
+        }
+    }
+    return false
+}
+
 /// 驱动调试计数器（共享内存文件，app/探针直接读取，不依赖日志系统）。
 struct DriverDebugBlock {
     var magic: UInt32          // 'HPLD'

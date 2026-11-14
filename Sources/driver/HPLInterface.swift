@@ -73,6 +73,7 @@ func HPL_Initialize (inDriver: AudioServerPlugInDriverRef, inHost: AudioServerPl
   HPLDevice.shmWriter = DriverShmWriter()
   HPLDevice.debug?.set(\.shmOk, HPLDevice.shmWriter != nil ? 1 : 99)
   HPLDevice.debug?.set(\.phase, 3)
+  HPLDevice.startPresenceWatchdog()
 
   return noErr
 }
