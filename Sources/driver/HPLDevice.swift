@@ -27,6 +27,10 @@ class HPLDevice: HPLObject {
   static var isHidden = true
   static var presenceTimer: DispatchSourceTimer?
 
+  static func currentHiddenState() -> Bool {
+    return !appProcessExists("HeadphoneLabHost")
+  }
+
   static var ringBuffer: UnsafeMutablePointer<Float32>?
 
   static func getDescription (for samplingRate: Float64) -> AudioStreamBasicDescription {
@@ -311,8 +315,9 @@ class HPLDevice: HPLObject {
       )
 
     case kAudioDevicePropertyIsHidden:
-      // 由存活看门狗维护：宿主 app 不在时隐藏设备（eqmac 同款设计）。
-      return .integer(isHidden ? 1 : 0)
+      // 实时计算：宿主 app 不在时隐藏（eqmac 同款设计）。
+      // 必须按需计算而非缓存——否则接管瞬间设备可能还处于隐藏态。
+      return .integer(currentHiddenState() ? 1 : 0)
 
     case kAudioDevicePropertyPreferredChannelsForStereo:
       // This property returns which two channesl to use as left/right for stereo
@@ -425,8 +430,7 @@ class HPLDevice: HPLObject {
     let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
     timer.schedule(deadline: .now() + 3, repeating: 5.0)
     timer.setEventHandler {
-      let visible = appProcessExists("HeadphoneLabHost")
-      let newHidden = !visible
+      let newHidden = currentHiddenState()
       if newHidden != isHidden {
         isHidden = newHidden
         HPLDriver.propertiesUpdated(
